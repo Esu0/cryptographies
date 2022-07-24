@@ -145,18 +145,18 @@ unsigned int md5_byte_reverse(unsigned int x)
 void dump(size_t byte_num, const void *data)
 {
 	const byte *p = (const byte *)data;
-	for(size_t i = 0; i < byte_num; i++)printf("%2x", p[i]);
+	for(size_t i = 0; i < byte_num; i++)printf("%02x ", p[i]);
 	printf("\n");
 }
 
 bit128 md5(size_t bit_num, const void *data)
 {
 	const unsigned int *mainptr = (const unsigned int *)data;
-	size_t size = bit_num >> 3;
-	unsigned short remainder = bit_num & 0x00000000000001ffull;
-	byte endsize = remainder < 448 ? 64 : 128;
+	size_t size = bit_num >> 3;//データサイズ[byte]
+	unsigned short remainder = bit_num & 0x00000000000001ffull;//最後に余るデータサイズ[bit]
+	byte endsize = remainder < 448 ? 64 : 128;//追加するブロックのサイズ[byte]
 	byte *added = (byte *)malloc(endsize);
-	if(added == NULL)exit(1);
+	if(added == NULL)exit(1);//メモリ確保失敗
 	size_t index;
 
 	unsigned int A = 0x67452301;
@@ -164,6 +164,7 @@ bit128 md5(size_t bit_num, const void *data)
 	unsigned int C = 0x98badcfe;
 	unsigned int D = 0x10325476;
 
+	/* パディング処理 */
 	const byte *pend = (byte *)data + ((bit_num - remainder) >> 3);
 	byte remainder_r = remainder & (unsigned short)0x07;
 	bit128 result;
@@ -171,7 +172,7 @@ bit128 md5(size_t bit_num, const void *data)
 	{
 		added[index] = pend[index];
 	}
-	added[index] = (pend[index] & ~((byte)0xff >> remainder_r)) | ((byte)0x80 >> remainder_r);
+	added[index] = (pend[index] & ~((byte)0xff << remainder_r)) | ((byte)0x01 << remainder_r);
 	for(index++; index < endsize; index++)added[index] = 0;
 	index -= 8;
 	added[index] = bit_num & 0x00000000000000ffull;
@@ -208,7 +209,7 @@ bit128 md5(size_t bit_num, const void *data)
 
 void print128(bit128 x)
 {
-	printf("%08x%08x%08x%08x\n", x._dat[0], x._dat[1], x._dat[2], x._dat[3]);
+	printf("%08x%08x%08x%08x\n", x._dat[3], x._dat[2], x._dat[1], x._dat[0]);
 }
 
 typedef union __bit1600

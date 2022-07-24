@@ -4,7 +4,7 @@
 #include<time.h>
 #include<stdlib.h>
 #include<keccak.h>
-#define N 10000000
+#define N 100000
 
 int main()
 {
