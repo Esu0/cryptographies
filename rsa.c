@@ -1,6 +1,7 @@
-#include"crypts.h"
+﻿//#include"crypts.h"
 #include<stdio.h>
 #include<stdlib.h>
+#define _BIGINT_CARRY_MASK 0x00000000ffffffffull
 const int p = 103, q = 53, n = 5459, e = 433, d = 49;
 
 //4294967295進数の多倍長
@@ -23,6 +24,7 @@ unsigned int max2pow(unsigned int x)
 	return x + 1;
 }
 
+/* sizeの大きさの配列で多倍長を生成、中身は0で初期化 */
 biguint biguint_new(unsigned int size)
 {
 	biguint new_inst;
@@ -45,6 +47,9 @@ biguint biguint_new(unsigned int size)
 	return new_inst;
 }
 
+/* 使い終わったら実行
+	メモリ解放
+*/
 void biguint_delete(biguint *integer)
 {
 	if(integer->digits != NULL)
@@ -53,6 +58,7 @@ void biguint_delete(biguint *integer)
 	}
 }
 
+/* 標準の符号なし整数型からbiguintへの変換 */
 biguint biguint_with_integer(unsigned long long a)
 {
 	biguint new_inst;
@@ -65,7 +71,7 @@ biguint biguint_with_integer(unsigned long long a)
 		new_inst.max_value = 0;
 		return new_inst;
 	}
-	p[0] = (unsigned int)(0x00000000ffffffffull & a);
+	p[0] = (unsigned int)(_BIGINT_CARRY_MASK & a);
 	p[1] = (unsigned int)(a >> 32);
 	new_inst.digits = p;
 	new_inst.size = 2;
@@ -74,6 +80,7 @@ biguint biguint_with_integer(unsigned long long a)
 	return new_inst;
 }
 
+/* 1ワードだけ延長、他は_extendと同じ */
 static void _extend1digit(biguint *a)
 {
 	if(a == NULL || a->digits == NULL)return;
@@ -83,14 +90,23 @@ static void _extend1digit(biguint *a)
 		unsigned int new_cap = a->capacity * 2;
 		unsigned long long *tmp = a->digits;
 		a->digits = (unsigned long long *)malloc(sizeof(unsigned long long) * new_cap);
-		if(a->digits == NULL || a->size > new_cap)fprintf(stderr, "biguint extending failed.\n");
-		for(unsigned int i = 0; i < a->capacity; i++)a->digits[i] = tmp[i];
+		if(a->digits == NULL || a->size > new_cap)
+		{
+			fprintf(stderr, "biguint extending failed.\n");
+			return;
+		}
+		unsigned int tmp0 = a->capacity;
+		for(unsigned int i = 0; i < tmp0; i++)a->digits[i] = tmp[i];
 		a->capacity = new_cap;
-		free(p);
+		free(tmp);
 	}
 	a->digits[a->size - 1] = 0;
 }
 
+/* sizeをamountだけ延長
+	capacity,sizeは自動で更新
+	max_valueは手を加えない
+*/
 static void _extend(biguint *a, unsigned int amount)
 {
 	if(a == NULL || a->digits == NULL)return;
@@ -101,23 +117,199 @@ static void _extend(biguint *a, unsigned int amount)
 		unsigned int new_cap = max2pow(a->size);
 		unsigned long long *tmp = a->digits;
 		a->digits = (unsigned long long *)malloc(sizeof(unsigned long long) * new_cap);
-		if(a->digits == NULL || a->size > new_cap)fprintf(stderr, "biguint extending failed.\n");
+		if(a->digits == NULL || a->size > new_cap)
+		{
+			fprintf(stderr, "biguint extending failed.\n");
+			return;
+		}
 		for(unsigned int i = 0; i < pre_size; i++)a->digits[i] = tmp[i];
 		a->capacity = new_cap;
-		free(p);
+		free(tmp);
 	}
 	for(unsigned int i = pre_size; i < pre_size + amount; i++)a->digits[i] = 0;
 }
 
+/* sizeを変更する(縮小にも対応)
+	縮小する場合はcapacityは変化しない
+*/
+static void _resize(biguint *a, unsigned int new_size)
+{
+	if(a == NULL || a->digits == NULL)return;
+	if(a->size > new_size)a->size = new_size;
+	else if(a->size < new_size)_extend(a, new_size - a->size);
+}
+
+/* 先頭の0を切り詰める */
+static void _delete_zero(biguint *a)
+{
+	while(a->size > 1 && a->digits[a->size - 1] == 0)a->size--;
+}
+
+/* 無効な数かを判断 */
+int is_null(const biguint *num)
+{
+	return num == NULL || num->digits == NULL;
+}
+
+/* 溜まったキャリーをまとめてリセット */
 void fix_carry(biguint *num)
 {
-	
+	if(num == NULL || num->digits == NULL)return;
+	unsigned long long *digits = num->digits;
+	unsigned int carry = 0;
+	unsigned int i;
+	for(i = 0; i < num->size; i++)
+	{
+		digits[i] += carry;
+		carry = digits[i] >> 32;
+		digits[i] &= _BIGINT_CARRY_MASK;
+	}
+	if(carry != 0)
+	{
+		_extend1digit(num);
+		num->digits[num->size - 1] = carry;
+	}
+	num->max_value = UINT_MAX;
+	_delete_zero(num);
 }
-//a += b
+
+/* capacityを減らす */
+void shrink(biguint *num)
+{
+	if(num == NULL || num->digits == NULL)return;
+	unsigned int new_cap = max2pow(num->size);
+	if(new_cap <= num->capacity)return;
+	unsigned long long *tmp = num->digits;
+	num->digits = (unsigned long long *)malloc(sizeof(unsigned long long) * new_cap);
+	if(num->digits == NULL)
+	{
+		fprintf(stderr, "biguint shrink failed.");
+		return;
+	}
+	for(unsigned int i = 0; i < num->size; i++)
+	{
+		num->digits[i] = tmp[i];
+	}
+	free(tmp);
+	num->capacity = new_cap;
+}
+
+/*キャリーを処理しながら足し算をする*/
+static void big_add_with_carry_fix(biguint *a, const biguint *b)
+{
+	unsigned long long carry = 0;
+	unsigned int i;
+	unsigned long long *pa = a->digits;
+	const unsigned long long *pb = b->digits;
+	for(i = 0; i < a->size; i++)
+	{
+		if(i < b->size)
+		{
+			carry = (pa[i] >> 32) + (pb[i] >> 32) + (carry >> 32);
+			pa[i] = (pa[i] & _BIGINT_CARRY_MASK) + (pb[i] & _BIGINT_CARRY_MASK);
+			carry += pa[i] >> 32;
+			pa[i] &= _BIGINT_CARRY_MASK;
+		}
+		else break;
+	}
+	if(a->size < b->size)
+	{
+		_extend(a, b->size - a->size);
+		pa = a->digits;
+		for(; i < b->size; i++)
+		{
+			carry = (pb[i] >> 32) + (carry >> 32);
+			pa[i] = pb[i] & _BIGINT_CARRY_MASK;
+			carry += pa[i] >> 32;
+			pa[i] &= _BIGINT_CARRY_MASK;
+		}
+	}
+	if(carry)
+	{
+		if(i >= a->size)
+		{
+			_extend1digit(a);
+			pa = a->digits;
+		}
+		pa[i] = carry & _BIGINT_CARRY_MASK;
+		carry >>= 32;
+		i++;
+		if(carry)
+		{
+			if(i >= a->size)
+			{
+				_extend1digit(a);
+				pa = a->digits;
+			}
+			pa[i] = carry;
+		}
+	}
+
+	_delete_zero(a);
+	a->max_value = ULONG_MAX;
+}
+
+/* a += b */
 void big_add(biguint *a, const biguint *b)
 {
-	
+	if(is_null(a) || is_null(b))return;
+	if(ULLONG_MAX - a->max_value < b->max_value)
+	{
+		big_add_with_carry_fix(a, b);
+	}
+	else
+	{
+		unsigned int i;
+		a->max_value += b->max_value;
+		for(i = 0; i < a->size; i++)
+		{
+			if(i < b->size)
+			{
+				a->digits[i] += b->digits[i];
+			}
+			else break;
+		}
+		if(a->size < b->size)
+		{
+			_extend(a, b->size - a->size);
+			for(; i < b->size; i++)
+			{
+				a->digits[i] = b->digits[i];
+			}
+		}
+	}
 }
+
+/* a -= b */
+void big_sub(biguint *a, const biguint *b)
+{
+
+}
+
+/* a *= b */
+void big_mul(biguint *a, const biguint *b)
+{
+
+}
+
+/* a %= b */
+void big_rem(biguint *a, const biguint *b)
+{
+
+}
+
+/* 多倍長整数出力 */
+void biguint_print(biguint *num)
+{
+	if(is_null(num))return;
+	fix_carry(num);
+	for(unsigned int i = num->size; i > 0;)
+	{
+		i--;
+		printf("%08lx", (long unsigned int)(num->digits[i]));
+	}
+}
+
 //べき剰余計算(バイナリ法)(引数base:a, exp:b, mod:nとして、a^b mod nを計算)
 int modpow(int base, unsigned int exp, int mod)
 {
@@ -139,4 +331,16 @@ int modpow(int base, unsigned int exp, int mod)
         mask >>= 1;
     }
     return result;
+}
+
+int main()
+{
+	biguint a = biguint_with_integer(0x333344445555), b = biguint_with_integer(0xffffff23ffff0);
+	biguint_print(&a);
+	printf("\n");
+	big_add(&a, &b);
+	biguint_print(&a);
+	printf("\n");
+	biguint_delete(&a);
+	biguint_delete(&b);
 }
