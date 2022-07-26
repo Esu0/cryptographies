@@ -2,6 +2,7 @@
 #include<stdio.h>
 #include<stdlib.h>
 #define _BIGINT_CARRY_MASK 0x00000000ffffffffull
+#define _BIGINT_DIGIT_MAX 0x0fffffffffffffffull
 const int p = 103, q = 53, n = 5459, e = 433, d = 49;
 
 //4294967295進数の多倍長
@@ -12,6 +13,8 @@ typedef struct __biguint
 	unsigned int capacity;
 	unsigned long long max_value;
 } biguint;
+
+static void _delete_zero(biguint *);
 
 unsigned int max2pow(unsigned int x)
 {
@@ -77,6 +80,7 @@ biguint biguint_with_integer(unsigned long long a)
 	new_inst.size = 2;
 	new_inst.capacity = 2;
 	new_inst.max_value = UINT_MAX;
+	_delete_zero(&new_inst);
 	return new_inst;
 }
 
@@ -253,7 +257,7 @@ static void big_add_with_carry_fix(biguint *a, const biguint *b)
 void big_add(biguint *a, const biguint *b)
 {
 	if(is_null(a) || is_null(b))return;
-	if(ULLONG_MAX - a->max_value < b->max_value)
+	if(_BIGINT_DIGIT_MAX - a->max_value < b->max_value)
 	{
 		big_add_with_carry_fix(a, b);
 	}
@@ -283,7 +287,55 @@ void big_add(biguint *a, const biguint *b)
 /* a -= b */
 void big_sub(biguint *a, const biguint *b)
 {
+	if(is_null(a) || is_null(b))return;
+	if(a->size < b->size)
+	{
+		a->size = 1;
+		a->digits[0] = 0;
+		return;
+	}
+	unsigned int i;
+	long long carry = 0;
+	for(i = 0; i < b->size; i++)
+	{
+		unsigned long long sub;
+		if(carry < 0)
+		{
+			sub = b->digits[i] + (unsigned long long)(-carry);
+		}
+		else
+		{
+			sub = b->digits[i];
+			a->digits[i] += (unsigned long long)carry;
+		}
+		carry = (long long)(a->digits[i] >> 32) - (long long)(sub >> 32);
+		sub &= _BIGINT_CARRY_MASK;
+		a->digits[i] &= _BIGINT_CARRY_MASK;
+		if(a->digits[i] < sub)
+		{
+			a->digits[i] += 0x0000000100000000 - sub;
+			carry--;
+		}
+		else
+		{
+			a->digits[i] -= sub;
+		}
+	}
 
+	for(; i < a->size; i++)
+	{
+		unsigned long long sub;
+		if(carry < 0)
+		{
+			sub = (unsigned long long)(-carry);
+		}
+		else
+		{
+			sub = 0;
+			a->digits[i] += (unsigned long long)carry;
+		}
+		//途中から
+	}
 }
 
 /* a *= b */
@@ -335,7 +387,7 @@ int modpow(int base, unsigned int exp, int mod)
 
 int main()
 {
-	biguint a = biguint_with_integer(0x333344445555), b = biguint_with_integer(0xffffff23ffff0);
+	biguint a = biguint_with_integer(0x333344445555), b = biguint_with_integer(0x00000000);
 	biguint_print(&a);
 	printf("\n");
 	big_add(&a, &b);
