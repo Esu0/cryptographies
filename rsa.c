@@ -322,6 +322,7 @@ void big_sub(biguint *a, const biguint *b)
 		}
 	}
 
+	//bの範囲外
 	for(; i < a->size; i++)
 	{
 		unsigned long long sub;
@@ -334,8 +335,200 @@ void big_sub(biguint *a, const biguint *b)
 			sub = 0;
 			a->digits[i] += (unsigned long long)carry;
 		}
-		//途中から
+		carry = (long long)(a->digits[i] >> 32) - (long long)(sub >> 32);
+		sub &= _BIGINT_CARRY_MASK;
+		a->digits[i] &= _BIGINT_CARRY_MASK;
+		if(a->digits[i] < sub)
+		{
+			a->digits[i] += 0x0000000100000000 - sub;
+		}
+		else
+		{
+			a->digits[i] -= sub;
+		}
 	}
+	if(carry < 0)
+	{
+		a->digits[0] = 0;
+		a->size = 1;
+	}
+	else if(carry)
+	{
+		_extend1digit(a);
+		a->digits[a->size - 1] = carry & _BIGINT_CARRY_MASK;
+		carry >>= 32;
+		if(carry)
+		{
+			_extend1digit(a);
+			a->digits[a->size - 1] = carry;
+		}
+	}
+	a->max_value = UINT_MAX;
+	_delete_zero(a);
+}
+
+void big_mul_normal(unsigned long long *prod, const unsigned long long *a, const unsigned long long *b, unsigned int n)
+{
+	for(unsigned int i = 0; i < n << 1; i++)prod[i] = 0;
+	for(unsigned int i = 0; i < n; i++)
+	{
+		for(unsigned int j = 0; j < n; j++)
+		{
+			unsigned int k = i + j;
+			unsigned long long tmp = a[i] * b[j];
+			prod[k] += tmp & _BIGINT_CARRY_MASK;
+			prod[k + 1] += tmp >> 32;
+		}
+	}
+	n <<= 1;
+	n--;
+	for(unsigned int i = 0; i < n; i++)
+	{
+		prod[i + 1] += prod[i] >> 32;
+		prod[i] &= _BIGINT_CARRY_MASK;
+	}
+}
+/* カラツバ法で掛け算
+	a,bはnワード、prodは2nワードのメモリが確保されているとする
+*/
+void _karatsuba_unsafe(unsigned long long *prod, const unsigned long long *a, const unsigned long long *b, unsigned int n)
+{
+	if(n <= 4)
+	{
+		/*
+		unsigned long long tmp = a[0] * b[0];
+		prod[0] = tmp & _BIGINT_CARRY_MASK;
+		prod[1] = tmp >> 32;
+		printf("init: %04llx, %04llx, \n", (unsigned long long)prod - testaddress, (unsigned long long)(prod + 1) - testaddress);
+		printf("value: %016llx, %016llx \n", prod[0], prod[1]);
+		*/
+		big_mul_normal(prod, a, b, n);
+		return;
+	}
+	unsigned int len1 = n / 2, len2 = n - len1;
+	unsigned long long *a1b1 = prod, *a2b2 = prod + len1 * 2;
+	const unsigned long long *a2 = a + len1, *b2 = b + len1;
+
+	//a1 * b1
+	_karatsuba_unsafe(a1b1, a, b, len1);
+
+	//a2 * b2
+	_karatsuba_unsafe(a2b2, a2, b2, len2);
+
+	/* (a1 + a2) * (b1 + b2) */
+	unsigned long long *a_sum = (unsigned long long *)malloc(sizeof(unsigned long long) * (len2 + 1));
+	unsigned long long *b_sum = (unsigned long long *)malloc(sizeof(unsigned long long) * (len2 + 1));
+	if(a_sum == NULL || b_sum == NULL)
+	{
+		fprintf(stderr, "memory allocation failed.");
+		exit(1);
+	}
+	unsigned long long carry_a = 0, carry_b = 0;
+	unsigned int i;
+	for(i = 0; i < len1; i++)
+	{
+		unsigned long long tmp = a[i] + a2[i] + carry_a;
+		a_sum[i] = tmp & _BIGINT_CARRY_MASK;
+		carry_a = tmp >> 32;
+		tmp = b[i] + b2[i] + carry_b;
+		b_sum[i] = tmp & _BIGINT_CARRY_MASK;
+		carry_b = tmp >> 32;
+	}
+	if(i < len2)
+	{
+		unsigned long long tmp = a2[i] + carry_a;
+		a_sum[i] = tmp & _BIGINT_CARRY_MASK;
+		carry_a = tmp >> 32;
+		tmp = b2[i] + carry_b;
+		b_sum[i] = tmp & _BIGINT_CARRY_MASK;
+		carry_b = tmp >> 32;
+		i++;
+	}
+	a_sum[i] = carry_a;
+	b_sum[i] = carry_b;
+	unsigned long long *a_b_prod = (unsigned long long *)malloc(sizeof(unsigned long long) * ((len2 + 1) << 1));
+	if(a_b_prod == NULL)
+	{
+		fprintf(stderr, "memory allocation failed.");
+		exit(1);
+	}
+	_karatsuba_unsafe(a_b_prod, a_sum, b_sum, len2 + 1);
+	free(a_sum);
+	free(b_sum);
+
+	/* (a1 + a2) * (b1 + b2) - a1 * b1 - a2 * b2 */
+	unsigned int len1_2 = len1 << 1;
+	unsigned int len2_2 = len2 << 1;
+	carry_a = 0;
+	unsigned long long sub = 0;
+	for(i = 0; i < len1_2; i++)
+	{
+		sub = carry_a + a1b1[i] + a2b2[i];
+		//printf("ref: %04llx, %04llx, \n", (unsigned long long)(a1b1 + i) - testaddress, (unsigned long long)(a2b2 + i) - testaddress);
+		carry_a = sub >> 32;
+		sub &= _BIGINT_CARRY_MASK;
+		if(a_b_prod[i] >= sub)
+		{
+			a_b_prod[i] -= sub;
+		}
+		else
+		{
+			a_b_prod[i] += 0x0000000100000000 - sub;
+			carry_a++;
+		}
+	}
+	for(; i < len2_2; i++)
+	{
+		sub = carry_a + a2b2[i];
+		//printf("ref: %04llx, \n", (unsigned long long)(a2b2 + i) - testaddress);
+		carry_a = sub >> 32;
+		sub &= _BIGINT_CARRY_MASK;
+		if(a_b_prod[i] >= sub)
+		{
+			a_b_prod[i] -= sub;
+		}
+		else
+		{
+			a_b_prod[i] += 0x0000000100000000 - sub;
+			carry_a++;
+		}
+	}
+	for(; i < len2_2 + 2; i++)
+	{
+		sub = carry_a;
+		carry_a = sub >> 32;
+		sub &= _BIGINT_CARRY_MASK;
+		//printf("a_b_prod: %016llx\n", a_b_prod[i]);
+		if(a_b_prod[i] >= sub)
+		{
+			a_b_prod[i] -= sub;
+			break;
+		}
+		else
+		{
+			a_b_prod[i] += 0x0000000100000000 - sub;
+			carry_a++;
+		}
+	}
+
+	/* 一つ前の結果を足す */
+	unsigned int loops;
+	{
+		unsigned int tmp1 = len2_2 + 2, tmp2 = 2 * n - len1;
+		loops = tmp1 > tmp2 ? tmp2 : tmp1;
+	}
+	unsigned int j = len1;
+	carry_a = 0;
+	for(i = 0; i < loops; i++)
+	{
+		unsigned long long tmp = prod[j] + a_b_prod[i] + carry_a;
+		//printf("ref, write: %04llx, \n", (unsigned long long)(prod + j) - testaddress);
+		prod[j] = tmp & _BIGINT_CARRY_MASK;
+		//printf("value: %016llx, \n", prod[j]);
+		carry_a = tmp >> 32;
+		j++;
+	}
+	free(a_b_prod);
 }
 
 /* a *= b */
@@ -383,16 +576,4 @@ int modpow(int base, unsigned int exp, int mod)
         mask >>= 1;
     }
     return result;
-}
-
-int main()
-{
-	biguint a = biguint_with_integer(0x333344445555), b = biguint_with_integer(0x00000000);
-	biguint_print(&a);
-	printf("\n");
-	big_add(&a, &b);
-	biguint_print(&a);
-	printf("\n");
-	biguint_delete(&a);
-	biguint_delete(&b);
 }
