@@ -1,3 +1,8 @@
+#pragma once
+
+#ifndef _CRYPTS_H_
+#define _CRYPTS_H_
+
 #include<stdio.h>
 #include<stdlib.h>
 
@@ -30,3 +35,5 @@ word lrotatew(word, byte);
 
 bit256 keccak256(size_t, const void *);
 void print256(bit256);
+
+#endif
